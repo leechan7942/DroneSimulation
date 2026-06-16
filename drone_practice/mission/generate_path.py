@@ -13,7 +13,7 @@ keypoints = [
     (3.0,  0.0, 2.5),   # WP1
     (5.0,  2.0, 2.5),   # WP2
     (8.0,  5.0, 2.5),   # WP3
-    (12.0, 5.0, 2.5),   # 착륙 패드 직상공
+    (12.6, 5.0, 2.5),   # 빨간 패드에서 조금 벗어난 착륙 접근 지점
 ]
 
 SAMPLE_INTERVAL = 0.1  # 0.1m 간격
@@ -39,7 +39,7 @@ path_points.append(keypoints[-1])  # 마지막 점 추가
 
 # CSV 저장
 with open('practice_path.csv', 'w', newline='') as f:
-    writer = csv.writer(f)
+    writer = csv.writer(f, lineterminator='\n')
     writer.writerow(['x', 'y', 'z'])
     for x, y, z in path_points:
         writer.writerow([f'{x:.3f}', f'{y:.3f}', f'{z:.3f}'])
