@@ -13,9 +13,16 @@ from std_msgs.msg import Bool
 
 
 class PurePursuitPathFollower:
-    def __init__(self, csv_path=None, lookahead_distance=1.0, reach_threshold=0.3):
+    def __init__(
+        self,
+        csv_path=None,
+        lookahead_distance=1.0,
+        reach_threshold=0.3,
+        nearest_search_window=2,
+    ):
         self.lookahead_distance = lookahead_distance
         self.reach_threshold = reach_threshold
+        self.nearest_search_window = max(1, nearest_search_window)
         self.path = []
         self.index = 0
         self.finished = False
@@ -70,8 +77,9 @@ class PurePursuitPathFollower:
     def find_nearest_index(self, current_pose):
         best_index = self.index
         best_distance = float("inf")
+        search_end = min(len(self.path), self.index + self.nearest_search_window + 1)
 
-        for index in range(self.index, len(self.path)):
+        for index in range(self.index, search_end):
             distance = self.distance_2d(current_pose, self.path[index])
             if distance < best_distance:
                 best_distance = distance
@@ -276,6 +284,7 @@ class MissionController:
         self.initial_setpoint_count = rospy.get_param("~initial_setpoint_count", 100)
         self.local_setpoint_distance = max(rospy.get_param("~local_setpoint_distance", 1.0), 0.2)
         self.path_attraction_weight = min(max(rospy.get_param("~path_attraction_weight", 0.7), 0.0), 1.0)
+        self.nearest_search_window = rospy.get_param("~nearest_search_window", 2)
 
         self.current_state = State()
         self.current_pose = None
@@ -286,10 +295,12 @@ class MissionController:
         self.land_requested = False
         self.landing_target_z = None
         self.last_landing_time = None
+        self.landing_active = False
 
         self.path_follower = PurePursuitPathFollower(
             lookahead_distance=rospy.get_param("~lookahead_distance", 1.0),
             reach_threshold=rospy.get_param("~reach_threshold", 0.3),
+            nearest_search_window=self.nearest_search_window,
         )
         self.avoidance = APFAvoidance(
             influence_radius=rospy.get_param("~apf_influence_radius", 5.0),
@@ -308,6 +319,10 @@ class MissionController:
         self.setpoint_pub = rospy.Publisher(
             "/mavros/setpoint_position/local", PoseStamped, queue_size=10
         )
+        self.landing_active_pub = rospy.Publisher(
+            "/mission/landing_active", Bool, queue_size=1, latch=True
+        )
+        self.landing_active_pub.publish(Bool(data=False))
 
         rospy.wait_for_service("/mavros/cmd/arming")
         rospy.wait_for_service("/mavros/set_mode")
@@ -329,6 +344,16 @@ class MissionController:
 
     def landing_visible_callback(self, msg):
         self.landing_visible = msg.data
+
+    def publish_landing_active(self, active):
+        if self.landing_active == active:
+            return
+        self.landing_active = active
+        self.landing_active_pub.publish(Bool(data=active))
+        if active:
+            rospy.loginfo("랜딩패드 탐지 활성화")
+        else:
+            rospy.loginfo("랜딩패드 탐지 비활성화")
 
     def make_pose(self, x, y, z):
         pose = PoseStamped()
@@ -387,6 +412,7 @@ class MissionController:
         altitude_error = abs(self.current_pose.pose.position.z - target.pose.position.z)
         if altitude_error <= self.takeoff_tolerance:
             self.phase = "PATH_FOLLOW"
+            self.publish_landing_active(False)
             rospy.loginfo("이륙 완료: 경로 추종 단계로 전환")
 
         return self.make_pose(
@@ -460,6 +486,7 @@ class MissionController:
             self.phase = "LANDING_ALIGN"
             self.landing_target_z = self.current_pose.pose.position.z
             self.last_landing_time = rospy.Time.now()
+            self.publish_landing_active(True)
             rospy.loginfo("경로 추종 완료: 랜딩 정렬 단계로 전환")
 
         return pose
