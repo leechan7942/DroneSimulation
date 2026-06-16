@@ -3,117 +3,86 @@
 import math
 
 import rospy
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Point
 from sensor_msgs.msg import LaserScan
 
 
-class ObstacleAvoidanceNode:
-    def __init__(self):
-        rospy.init_node("obstacle_avoidance")
+class APFAvoidance:
+    def __init__(self, influence_radius=2.0, max_offset=0.7, gain=0.8, sample_step=3):
+        self.influence_radius = influence_radius
+        self.max_offset = max_offset
+        self.gain = gain
+        self.sample_step = max(1, sample_step)
 
-        self.flight_altitude = rospy.get_param("~flight_altitude", 2.5)
-        self.goal_x = rospy.get_param("~goal_x", 12.0)
-        self.goal_y = rospy.get_param("~goal_y", 5.0)
-        self.step_size = rospy.get_param("~step_size", 0.25)
-        self.safe_distance = rospy.get_param("~safe_distance", 1.2)
-        self.side_distance = rospy.get_param("~side_distance", 0.8)
+    def compute_offset(self, scan, yaw=0.0):
+        if scan is None:
+            return 0.0, 0.0
 
-        self.current_pose = None
-        self.front_dist = float("inf")
-        self.left_dist = float("inf")
-        self.right_dist = float("inf")
+        body_x = 0.0
+        body_y = 0.0
 
-        rospy.Subscriber("/scan", LaserScan, self.scan_callback)
-        rospy.Subscriber("/mavros/local_position/pose", PoseStamped, self.pose_callback)
-        self.setpoint_pub = rospy.Publisher(
-            "/mavros/setpoint_position/local", PoseStamped, queue_size=10
-        )
-
-    def pose_callback(self, msg):
-        self.current_pose = msg
-
-    def scan_callback(self, msg):
-        self.front_dist = self.get_sector_min(msg, -20, 20)
-        self.left_dist = self.get_sector_min(msg, 30, 90)
-        self.right_dist = self.get_sector_min(msg, -90, -30)
-
-    def get_sector_min(self, scan, min_deg, max_deg):
-        values = []
-
-        for index, distance in enumerate(scan.ranges):
+        for index in range(0, len(scan.ranges), self.sample_step):
+            distance = scan.ranges[index]
             if math.isinf(distance) or math.isnan(distance):
                 continue
             if distance < scan.range_min or distance > scan.range_max:
                 continue
+            if distance > self.influence_radius:
+                continue
 
             angle = scan.angle_min + index * scan.angle_increment
-            angle_deg = math.degrees(angle)
+            direction_x = -math.cos(angle)
+            direction_y = -math.sin(angle)
+            strength = self.gain * (1.0 / distance - 1.0 / self.influence_radius) / (distance * distance)
 
-            if min_deg <= angle_deg <= max_deg:
-                values.append(distance)
+            body_x += direction_x * strength
+            body_y += direction_y * strength
 
-        if not values:
-            return float("inf")
-        return min(values)
+        body_x, body_y = self.limit_vector(body_x, body_y, self.max_offset)
+        return self.rotate_body_to_map(body_x, body_y, yaw)
 
-    def make_setpoint(self):
-        pose = PoseStamped()
-        pose.header.stamp = rospy.Time.now()
-        pose.header.frame_id = "map"
+    def limit_vector(self, x, y, limit):
+        length = math.hypot(x, y)
+        if length <= limit or length == 0.0:
+            return x, y
+        scale = limit / length
+        return x * scale, y * scale
 
-        if self.current_pose is None:
-            pose.pose.position.x = 0.0
-            pose.pose.position.y = 0.0
-            pose.pose.position.z = self.flight_altitude
-            return pose
+    def rotate_body_to_map(self, body_x, body_y, yaw):
+        cos_yaw = math.cos(yaw)
+        sin_yaw = math.sin(yaw)
+        map_x = body_x * cos_yaw - body_y * sin_yaw
+        map_y = body_x * sin_yaw + body_y * cos_yaw
+        return map_x, map_y
 
-        current_x = self.current_pose.pose.position.x
-        current_y = self.current_pose.pose.position.y
 
-        goal_dx = self.goal_x - current_x
-        goal_dy = self.goal_y - current_y
-        goal_dist = math.hypot(goal_dx, goal_dy)
+class APFAvoidanceDebugNode:
+    def __init__(self):
+        rospy.init_node("apf_avoidance_debug")
+        self.avoidance = APFAvoidance(
+            influence_radius=rospy.get_param("~apf_influence_radius", 2.0),
+            max_offset=rospy.get_param("~apf_max_offset", 0.7),
+            gain=rospy.get_param("~apf_gain", 0.8),
+        )
+        self.offset_pub = rospy.Publisher("/avoidance/offset", Point, queue_size=10)
+        rospy.Subscriber("/scan", LaserScan, self.scan_callback)
 
-        if goal_dist > 0.05:
-            move_x = goal_dx / goal_dist
-            move_y = goal_dy / goal_dist
-        else:
-            move_x = 0.0
-            move_y = 0.0
-
-        if self.front_dist < self.safe_distance:
-            move_x = -0.2
-            if self.left_dist > self.right_dist:
-                move_y = 1.0
-            else:
-                move_y = -1.0
-            rospy.loginfo_throttle(1.0, "전방 장애물 감지: 우회 중")
-        elif self.left_dist < self.side_distance:
-            move_y -= 0.7
-            rospy.loginfo_throttle(1.0, "좌측 장애물 감지: 오른쪽으로 보정")
-        elif self.right_dist < self.side_distance:
-            move_y += 0.7
-            rospy.loginfo_throttle(1.0, "우측 장애물 감지: 왼쪽으로 보정")
-
-        length = math.hypot(move_x, move_y)
-        if length > 0.0:
-            move_x /= length
-            move_y /= length
-
-        pose.pose.position.x = current_x + move_x * self.step_size
-        pose.pose.position.y = current_y + move_y * self.step_size
-        pose.pose.position.z = self.flight_altitude
-        return pose
+    def scan_callback(self, msg):
+        offset_x, offset_y = self.avoidance.compute_offset(msg, 0.0)
+        self.offset_pub.publish(Point(x=offset_x, y=offset_y, z=0.0))
+        rospy.loginfo_throttle(
+            1.0,
+            "APF 회피 offset: x %.3f m, y %.3f m",
+            offset_x,
+            offset_y,
+        )
 
     def run(self):
-        rate = rospy.Rate(20)
-        while not rospy.is_shutdown():
-            self.setpoint_pub.publish(self.make_setpoint())
-            rate.sleep()
+        rospy.spin()
 
 
 if __name__ == "__main__":
     try:
-        ObstacleAvoidanceNode().run()
+        APFAvoidanceDebugNode().run()
     except rospy.ROSInterruptException:
         pass
