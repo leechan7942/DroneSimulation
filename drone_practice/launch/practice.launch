@@ -24,5 +24,7 @@
     <arg name="world"   value="$(arg world)"/>
     <arg name="sdf"     value="$(arg sdf)"/>
   </include>
-  <node pkg="drone_practice" type="main.py" name="main" output="screen" launch-prefix="bash -c 'sleep 10; exec $0 $@'"/>
+
+  <node pkg="drone_practice" type="land.py" name="landing_detector" output="screen" launch-prefix="bash -c 'sleep 10; exec $0 $@'"/>
+  <node pkg="drone_practice" type="main.py" name="mission_controller" output="screen" launch-prefix="bash -c 'sleep 10; exec $0 $@'"/>
 </launch>
