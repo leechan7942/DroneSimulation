@@ -8,7 +8,7 @@
   <arg name="P" default="0"/>
   <arg name="Y" default="0"/>
   <arg name="vehicle" default="iris"/>
-  <arg name="world" default="$(find drone_practice)/worlds/test1.world"/>
+  <arg name="world" default="$(find drone_practice)/worlds/main.world"/>
   <arg name="sdf" default="$(find drone_practice)/models/iris_with_sensors/iris.sdf"/>
 
   <env name="GAZEBO_MODEL_PATH" value="$(find drone_practice)/models:$(optenv GAZEBO_MODEL_PATH)"/>
