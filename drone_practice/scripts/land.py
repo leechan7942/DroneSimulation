@@ -23,19 +23,37 @@ class LandingDetectorNode:
 
         self.bridge = CvBridge()
         self.current_altitude = self.default_altitude
+        self.landing_active = False
 
         rospy.Subscriber(self.image_topic, Image, self.image_callback)
         rospy.Subscriber("/mavros/local_position/pose", PoseStamped, self.pose_callback)
+        rospy.Subscriber("/mission/landing_active", Bool, self.landing_active_callback)
 
         self.error_pub = rospy.Publisher("/landing/xy_error", Point, queue_size=10)
         self.visible_pub = rospy.Publisher("/landing/target_visible", Bool, queue_size=10)
+        self.visible_pub.publish(Bool(data=False))
 
-        rospy.loginfo("랜딩패드 탐지 노드 시작")
+        rospy.loginfo("랜딩패드 탐지 노드 시작: 랜딩 단계 전까지 대기")
 
     def pose_callback(self, msg):
         self.current_altitude = max(msg.pose.position.z, 0.1)
 
+    def landing_active_callback(self, msg):
+        if msg.data == self.landing_active:
+            return
+
+        self.landing_active = msg.data
+        if self.landing_active:
+            rospy.loginfo("랜딩패드 탐지 활성화")
+        else:
+            self.error_pub.publish(Point())
+            self.visible_pub.publish(Bool(data=False))
+            rospy.loginfo("랜딩패드 탐지 비활성화")
+
     def image_callback(self, msg):
+        if not self.landing_active:
+            return
+
         try:
             image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
         except CvBridgeError as error:
