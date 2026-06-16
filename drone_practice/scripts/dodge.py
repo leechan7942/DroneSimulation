@@ -10,13 +10,13 @@ from sensor_msgs.msg import LaserScan
 class APFAvoidance:
     def __init__(
         self,
-        influence_radius=5.0,
-        max_offset=1.5,
-        gain=0.8,
+        influence_radius=3.0,
+        max_offset=0.9,
+        gain=0.7,
         sample_step=3,
-        emergency_radius=0.8,
-        tangent_gain=1.0,
-        path_sector_angle=0.75,
+        emergency_radius=0.55,
+        tangent_gain=0.75,
+        path_sector_angle=0.65,
     ):
         self.influence_radius = influence_radius
         self.max_offset = max_offset
@@ -25,6 +25,8 @@ class APFAvoidance:
         self.emergency_radius = emergency_radius
         self.tangent_gain = tangent_gain
         self.path_sector_angle = path_sector_angle
+        self.locked_turn_side = None
+        self.lock_release_distance = self.influence_radius * 0.9
 
     def compute_offset(self, scan, yaw=0.0):
         offset_x, offset_y, _, _, _ = self.compute_avoidance(scan, yaw, (1.0, 0.0))
@@ -81,13 +83,19 @@ class APFAvoidance:
                 path_min_distance = min(path_min_distance, distance)
 
         if not obstacle_detected:
+            self.locked_turn_side = None
             return 0.0, 0.0, False, min_distance, "none"
 
         left_score = left_clearance / max(left_count, 1)
         right_score = right_clearance / max(right_count, 1)
-        turn_side = "left" if left_score >= right_score else "right"
+        measured_turn_side = "left" if left_score >= right_score else "right"
+        turn_side = measured_turn_side
 
         if path_blocked:
+            if self.locked_turn_side is None or min_distance >= self.lock_release_distance:
+                self.locked_turn_side = measured_turn_side
+            turn_side = self.locked_turn_side
+
             if path_min_distance == float("inf"):
                 path_min_distance = min_distance
             tangent_scale = self.scale_by_distance(path_min_distance)
@@ -100,6 +108,7 @@ class APFAvoidance:
             body_x += tangent_x * self.tangent_gain * tangent_scale
             body_y += tangent_y * self.tangent_gain * tangent_scale
         else:
+            self.locked_turn_side = None
             turn_side = "repulse"
 
         if min_distance <= self.emergency_radius:
@@ -154,11 +163,12 @@ class APFAvoidanceDebugNode:
     def __init__(self):
         rospy.init_node("apf_avoidance_debug")
         self.avoidance = APFAvoidance(
-            influence_radius=rospy.get_param("~apf_influence_radius", 5.0),
-            max_offset=rospy.get_param("~apf_max_offset", 1.5),
-            gain=rospy.get_param("~apf_gain", 0.8),
-            emergency_radius=rospy.get_param("~apf_emergency_radius", 0.8),
-            tangent_gain=rospy.get_param("~apf_tangent_gain", 1.0),
+            influence_radius=rospy.get_param("~apf_influence_radius", 3.0),
+            max_offset=rospy.get_param("~apf_max_offset", 0.9),
+            gain=rospy.get_param("~apf_gain", 0.7),
+            emergency_radius=rospy.get_param("~apf_emergency_radius", 0.55),
+            tangent_gain=rospy.get_param("~apf_tangent_gain", 0.75),
+            path_sector_angle=rospy.get_param("~apf_path_sector_angle", 0.65),
         )
         self.offset_pub = rospy.Publisher("/avoidance/offset", Point, queue_size=10)
         rospy.Subscriber("/scan", LaserScan, self.scan_callback)
