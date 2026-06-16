@@ -210,6 +210,8 @@ include_directories(
 ## Custom: Install Scripts ##
 #############################
 catkin_install_python(PROGRAMS
-  scripts/drone_demo.py
+  scripts/main.py
+  scripts/dodge.py
+  scripts/land.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
