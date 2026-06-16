@@ -131,13 +131,13 @@ class PurePursuitPathFollower:
 class APFAvoidance:
     def __init__(
         self,
-        influence_radius=5.0,
-        max_offset=1.5,
-        gain=0.8,
+        influence_radius=3.0,
+        max_offset=0.9,
+        gain=0.7,
         sample_step=3,
-        emergency_radius=0.8,
-        tangent_gain=1.0,
-        path_sector_angle=0.75,
+        emergency_radius=0.55,
+        tangent_gain=0.75,
+        path_sector_angle=0.65,
     ):
         self.influence_radius = influence_radius
         self.max_offset = max_offset
@@ -146,6 +146,8 @@ class APFAvoidance:
         self.emergency_radius = emergency_radius
         self.tangent_gain = tangent_gain
         self.path_sector_angle = path_sector_angle
+        self.locked_turn_side = None
+        self.lock_release_distance = self.influence_radius * 0.9
 
     def compute_offset(self, scan, yaw=0.0):
         offset_x, offset_y, _, _, _ = self.compute_avoidance(scan, yaw, (1.0, 0.0))
@@ -202,13 +204,19 @@ class APFAvoidance:
                 path_min_distance = min(path_min_distance, distance)
 
         if not obstacle_detected:
+            self.locked_turn_side = None
             return 0.0, 0.0, False, min_distance, "none"
 
         left_score = left_clearance / max(left_count, 1)
         right_score = right_clearance / max(right_count, 1)
-        turn_side = "left" if left_score >= right_score else "right"
+        measured_turn_side = "left" if left_score >= right_score else "right"
+        turn_side = measured_turn_side
 
         if path_blocked:
+            if self.locked_turn_side is None or min_distance >= self.lock_release_distance:
+                self.locked_turn_side = measured_turn_side
+            turn_side = self.locked_turn_side
+
             if path_min_distance == float("inf"):
                 path_min_distance = min_distance
             tangent_scale = self.scale_by_distance(path_min_distance)
@@ -221,6 +229,7 @@ class APFAvoidance:
             body_x += tangent_x * self.tangent_gain * tangent_scale
             body_y += tangent_y * self.tangent_gain * tangent_scale
         else:
+            self.locked_turn_side = None
             turn_side = "repulse"
 
         if min_distance <= self.emergency_radius:
@@ -282,8 +291,10 @@ class MissionController:
         self.landing_min_altitude = rospy.get_param("~landing_min_altitude", 0.35)
         self.mode_retry_interval = rospy.Duration(rospy.get_param("~mode_retry_interval", 5.0))
         self.initial_setpoint_count = rospy.get_param("~initial_setpoint_count", 100)
-        self.local_setpoint_distance = max(rospy.get_param("~local_setpoint_distance", 1.0), 0.2)
-        self.path_attraction_weight = min(max(rospy.get_param("~path_attraction_weight", 0.7), 0.0), 1.0)
+        self.local_setpoint_distance = max(rospy.get_param("~local_setpoint_distance", 0.5), 0.2)
+        self.path_attraction_weight = min(max(rospy.get_param("~path_attraction_weight", 0.85), 0.0), 1.0)
+        self.min_forward_step = max(rospy.get_param("~min_forward_step", 0.08), 0.0)
+        self.max_lateral_step = max(rospy.get_param("~max_lateral_step", 0.55), 0.1)
         self.nearest_search_window = rospy.get_param("~nearest_search_window", 2)
 
         self.current_state = State()
@@ -303,11 +314,12 @@ class MissionController:
             nearest_search_window=self.nearest_search_window,
         )
         self.avoidance = APFAvoidance(
-            influence_radius=rospy.get_param("~apf_influence_radius", 5.0),
-            max_offset=rospy.get_param("~apf_max_offset", 1.5),
-            gain=rospy.get_param("~apf_gain", 0.8),
-            emergency_radius=rospy.get_param("~apf_emergency_radius", 0.8),
-            tangent_gain=rospy.get_param("~apf_tangent_gain", 1.0),
+            influence_radius=rospy.get_param("~apf_influence_radius", 3.0),
+            max_offset=rospy.get_param("~apf_max_offset", 0.9),
+            gain=rospy.get_param("~apf_gain", 0.7),
+            emergency_radius=rospy.get_param("~apf_emergency_radius", 0.55),
+            tangent_gain=rospy.get_param("~apf_tangent_gain", 0.75),
+            path_sector_angle=rospy.get_param("~apf_path_sector_angle", 0.65),
         )
 
         rospy.Subscriber("/mavros/state", State, self.state_callback)
@@ -396,6 +408,26 @@ class MissionController:
         scale = limit / length
         return x * scale, y * scale
 
+    def keep_waypoint_progress(self, desired_x, desired_y, goal_x, goal_y, step_distance, allow_stop=False):
+        goal_length = math.hypot(goal_x, goal_y)
+        if goal_length <= 0.05:
+            return desired_x, desired_y
+
+        goal_unit_x = goal_x / goal_length
+        goal_unit_y = goal_y / goal_length
+        forward = desired_x * goal_unit_x + desired_y * goal_unit_y
+        lateral_x = desired_x - forward * goal_unit_x
+        lateral_y = desired_y - forward * goal_unit_y
+
+        min_forward = 0.0 if allow_stop else min(self.min_forward_step, step_distance)
+        forward = max(forward, min_forward)
+        lateral_x, lateral_y = self.limit_vector(lateral_x, lateral_y, self.max_lateral_step)
+
+        return (
+            forward * goal_unit_x + lateral_x,
+            forward * goal_unit_y + lateral_y,
+        )
+
     def get_initial_setpoint(self):
         target = self.path_follower.get_start_pose()
         return self.make_pose(
@@ -435,6 +467,7 @@ class MissionController:
             path_dx = goal_dx / goal_distance * step_distance
             path_dy = goal_dy / goal_distance * step_distance
         else:
+            step_distance = 0.0
             path_dx = 0.0
             path_dy = 0.0
 
@@ -446,7 +479,8 @@ class MissionController:
         )
 
         if avoiding:
-            if min_distance <= self.avoidance.emergency_radius:
+            emergency = min_distance <= self.avoidance.emergency_radius
+            if emergency:
                 desired_dx = avoid_x
                 desired_dy = avoid_y
                 mode_text = "긴급 회피"
@@ -454,10 +488,19 @@ class MissionController:
                 desired_dx = path_dx * self.path_attraction_weight + avoid_x
                 desired_dy = path_dy * self.path_attraction_weight + avoid_y
                 mode_text = "회피 경로 추종"
+
+            desired_dx, desired_dy = self.keep_waypoint_progress(
+                desired_dx,
+                desired_dy,
+                goal_dx,
+                goal_dy,
+                step_distance,
+                allow_stop=emergency,
+            )
             max_step = max(self.local_setpoint_distance, self.avoidance.max_offset)
             rospy.loginfo_throttle(
                 0.5,
-                "APF %s: 최소 거리 %.2f m, 우회 %s, setpoint offset x %.2f m, y %.2f m",
+                "APF %s: 최소 거리 %.2f m, 우회 %s, 보정 후 setpoint offset x %.2f m, y %.2f m",
                 mode_text,
                 min_distance,
                 turn_side,
