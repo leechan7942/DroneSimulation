@@ -84,20 +84,18 @@ class LandingDetectorNode:
 
         pixel_error_x = center_x - width / 2.0
         pixel_error_y = center_y - height / 2.0
-
         meters_per_pixel = self.get_meters_per_pixel(width)
 
-        error = Point()
-        error.x = -pixel_error_y * meters_per_pixel * self.offset_gain
-        error.y = -pixel_error_x * meters_per_pixel * self.offset_gain
-        error.z = area
+        body_x_error = -pixel_error_y * meters_per_pixel * self.offset_gain
+        body_y_error = -pixel_error_x * meters_per_pixel * self.offset_gain
 
+        error = Point(x=body_x_error, y=body_y_error, z=area)
         self.error_pub.publish(error)
         self.visible_pub.publish(Bool(data=True))
 
         rospy.loginfo_throttle(
             1.0,
-            "랜딩패드 감지: x 보정 %.3f m, y 보정 %.3f m, 면적 %.1f",
+            "랜딩패드 감지: body x 보정 %.3f m, body y 보정 %.3f m, 면적 %.1f",
             error.x,
             error.y,
             area,
