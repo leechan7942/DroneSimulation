@@ -11,14 +11,14 @@ class VFHObstacleAvoidance:
     def __init__(
         self,
         sector_angle_deg=10.0,
-        influence_radius=2.2,
-        safe_distance=0.65,
+        influence_radius=3.0,
+        safe_distance=1.1,
         goal_weight=1.0,
-        obstacle_weight=2.0,
-        smooth_weight=0.4,
-        reverse_penalty=4.0,
+        obstacle_weight=3.0,
+        smooth_weight=0.8,
+        reverse_penalty=8.0,
         sample_step=1,
-        inflation_sectors=1,
+        inflation_sectors=2,
     ):
         self.sector_count = max(8, int(round(360.0 / max(sector_angle_deg, 1.0))))
         self.sector_angle = 2.0 * math.pi / self.sector_count
@@ -37,11 +37,11 @@ class VFHObstacleAvoidance:
             scan,
             yaw,
             (1.0, 0.0),
-            0.4,
+            0.3,
         )
         return offset_x, offset_y
 
-    def compute_avoidance(self, scan, yaw=0.0, goal_body_vector=None, step_distance=0.4):
+    def compute_avoidance(self, scan, yaw=0.0, goal_body_vector=None, step_distance=0.3):
         selected_heading, active, min_distance, goal_diff, selected_distance, status, speed_scale = self.select_heading(
             scan,
             goal_body_vector,
@@ -99,20 +99,26 @@ class VFHObstacleAvoidance:
                 }
             )
 
+        safe_forward_candidates = [
+            candidate for candidate in candidates if candidate["safe"] and candidate["forward"]
+        ]
         safe_candidates = [candidate for candidate in candidates if candidate["safe"]]
-        if safe_candidates:
-            usable_candidates = safe_candidates
+        forward_candidates = [candidate for candidate in candidates if candidate["forward"]]
+
+        if safe_forward_candidates:
+            usable_candidates = safe_forward_candidates
             status = "avoid"
-            speed_scale = 1.0
+        elif safe_candidates:
+            usable_candidates = safe_candidates
+            status = "avoid_side"
         else:
-            forward_candidates = [candidate for candidate in candidates if candidate["forward"]]
             usable_candidates = forward_candidates if forward_candidates else candidates
             status = "tight"
-            speed_scale = 0.35 if min_distance > self.safe_distance * 0.5 else 0.0
 
         selected = min(usable_candidates, key=lambda candidate: candidate["cost"])
         selected_heading = self.clamp_to_forward_arc(selected["heading"], goal_heading)
         selected_goal_diff = abs(self.angle_diff(selected_heading, goal_heading))
+        speed_scale = self.speed_scale_by_distance(min_distance)
         self.previous_heading_body = selected_heading
         return (
             selected_heading,
@@ -149,8 +155,20 @@ class VFHObstacleAvoidance:
         if distance >= self.influence_radius:
             return 0.0
         if distance <= self.safe_distance:
-            return 1.0 + (self.safe_distance - distance) / max(self.safe_distance, 0.01) * 3.0
+            return 1.0 + (self.safe_distance - distance) / max(self.safe_distance, 0.01) * 4.0
         return (self.influence_radius - distance) / max(self.influence_radius - self.safe_distance, 0.01)
+
+    def speed_scale_by_distance(self, distance):
+        if distance == float("inf"):
+            return 1.0
+        if distance <= self.safe_distance * 0.5:
+            return 0.25
+        if distance <= self.safe_distance:
+            return 0.35
+        if distance >= self.influence_radius:
+            return 1.0
+        ratio = (distance - self.safe_distance) / max(self.influence_radius - self.safe_distance, 0.01)
+        return 0.55 + 0.45 * min(max(ratio, 0.0), 1.0)
 
     def reverse_cost(self, goal_diff):
         if goal_diff <= math.pi / 2.0:
@@ -205,15 +223,16 @@ APFAvoidance = VFHObstacleAvoidance
 class VFHObstacleAvoidanceDebugNode:
     def __init__(self):
         rospy.init_node("vfh_avoidance_debug")
-        self.local_setpoint_distance = rospy.get_param("~local_setpoint_distance", 0.4)
+        self.local_setpoint_distance = rospy.get_param("~local_setpoint_distance", 0.3)
         self.avoidance = VFHObstacleAvoidance(
             sector_angle_deg=rospy.get_param("~vfh_sector_angle_deg", 10.0),
-            influence_radius=rospy.get_param("~vfh_influence_radius", 2.2),
-            safe_distance=rospy.get_param("~vfh_safe_distance", 0.65),
+            influence_radius=rospy.get_param("~vfh_influence_radius", 3.0),
+            safe_distance=rospy.get_param("~vfh_safe_distance", 1.1),
             goal_weight=rospy.get_param("~vfh_goal_weight", 1.0),
-            obstacle_weight=rospy.get_param("~vfh_obstacle_weight", 2.0),
-            smooth_weight=rospy.get_param("~vfh_smooth_weight", 0.4),
-            reverse_penalty=rospy.get_param("~vfh_reverse_penalty", 4.0),
+            obstacle_weight=rospy.get_param("~vfh_obstacle_weight", 3.0),
+            smooth_weight=rospy.get_param("~vfh_smooth_weight", 0.8),
+            reverse_penalty=rospy.get_param("~vfh_reverse_penalty", 8.0),
+            inflation_sectors=rospy.get_param("~vfh_inflation_sectors", 2),
         )
         self.offset_pub = rospy.Publisher("/avoidance/offset", Point, queue_size=10)
         rospy.Subscriber("/scan", LaserScan, self.scan_callback)
