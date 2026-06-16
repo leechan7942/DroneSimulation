@@ -30,6 +30,7 @@ catkin_install_python(PROGRAMS
   scripts/main.py
   scripts/path.py
   scripts/dodge.py
+  scripts/local_grid_planner.py
   scripts/land.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
