@@ -182,6 +182,8 @@ class MissionController:
         self.landing_visible = False
         self.phase = "TAKEOFF"
         self.land_requested = False
+        self.landing_target_z = None
+        self.last_landing_time = None
 
         self.path_follower = PurePursuitPathFollower(
             lookahead_distance=rospy.get_param("~lookahead_distance", 1.0),
@@ -286,9 +288,21 @@ class MissionController:
 
         if self.path_follower.is_finished():
             self.phase = "LANDING_ALIGN"
+            self.landing_target_z = self.current_pose.pose.position.z
+            self.last_landing_time = rospy.Time.now()
             rospy.loginfo("경로 추종 완료: 랜딩 정렬 단계로 전환")
 
         return pose
+
+    def get_landing_dt(self):
+        now = rospy.Time.now()
+        if self.last_landing_time is None:
+            self.last_landing_time = now
+            return 1.0 / self.rate_hz
+
+        dt = (now - self.last_landing_time).to_sec()
+        self.last_landing_time = now
+        return min(max(dt, 0.0), 0.2)
 
     def build_landing_setpoint(self):
         final_pose = self.path_follower.get_final_pose()
@@ -304,38 +318,52 @@ class MissionController:
         current_y = self.current_pose.pose.position.y
         current_z = self.current_pose.pose.position.z
 
+        if self.landing_target_z is None:
+            self.landing_target_z = current_z
+            self.last_landing_time = rospy.Time.now()
+
         if not self.landing_visible:
-            rospy.loginfo_throttle(1.0, "랜딩패드 미검출: 마지막 경로점 상공에서 대기")
-            return self.make_pose(
-                final_pose.pose.position.x,
-                final_pose.pose.position.y,
-                final_pose.pose.position.z,
+            rospy.loginfo_throttle(
+                1.0,
+                "랜딩패드 미검출: 현재 위치와 목표 고도 %.2f m 유지",
+                self.landing_target_z,
             )
+            return self.make_pose(current_x, current_y, self.landing_target_z)
 
         error_norm = math.hypot(self.landing_error.x, self.landing_error.y)
         map_error_x, map_error_y = self.rotate_body_to_map(
             self.landing_error.x, self.landing_error.y
         )
 
-        target_z = current_z
         if error_norm <= self.landing_precision_radius:
-            target_z = max(
-                current_z - self.landing_descent_rate / self.rate_hz,
+            dt = self.get_landing_dt()
+            self.landing_target_z = max(
+                self.landing_target_z - self.landing_descent_rate * dt,
                 self.landing_min_altitude,
             )
             self.phase = "LANDING_DESCEND"
-            rospy.loginfo_throttle(1.0, "랜딩패드 정렬 완료: 하강 중")
+            rospy.loginfo_throttle(
+                0.5,
+                "랜딩패드 정렬 완료: 하강 중, 현재 z %.2f m, 목표 z %.2f m, 수평 오차 %.3f m",
+                current_z,
+                self.landing_target_z,
+                error_norm,
+            )
         else:
+            self.phase = "LANDING_ALIGN"
+            self.last_landing_time = rospy.Time.now()
             rospy.loginfo_throttle(
                 1.0,
-                "랜딩패드 정렬 중: 수평 오차 %.3f m",
+                "랜딩패드 정렬 중: 현재 z %.2f m, 목표 z %.2f m, 수평 오차 %.3f m",
+                current_z,
+                self.landing_target_z,
                 error_norm,
             )
 
-        if current_z <= self.landing_min_altitude and not self.land_requested:
+        if (current_z <= self.landing_min_altitude or self.landing_target_z <= self.landing_min_altitude) and not self.land_requested:
             self.request_auto_land()
 
-        return self.make_pose(current_x + map_error_x, current_y + map_error_y, target_z)
+        return self.make_pose(current_x + map_error_x, current_y + map_error_y, self.landing_target_z)
 
     def build_setpoint(self):
         if self.current_pose is None:
