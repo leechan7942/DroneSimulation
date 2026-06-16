@@ -5,7 +5,7 @@ import subprocess
 import sys
 
 scripts_dir = os.path.dirname(os.path.abspath(__file__))
-scripts = ["dodge.py", "land.py"]
+scripts = ["dodge.py", "land.py","path.py"]
 processes = []
 
 for script in scripts:
