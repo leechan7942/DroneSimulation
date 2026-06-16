@@ -128,118 +128,170 @@ class PurePursuitPathFollower:
         return self.finished
 
 
-class APFAvoidance:
+class VFHObstacleAvoidance:
     def __init__(
         self,
-        influence_radius=3.0,
-        max_offset=0.9,
-        gain=0.7,
-        sample_step=3,
-        emergency_radius=0.55,
-        tangent_gain=0.75,
-        path_sector_angle=0.65,
+        sector_angle_deg=10.0,
+        influence_radius=2.2,
+        safe_distance=0.65,
+        goal_weight=1.0,
+        obstacle_weight=2.0,
+        smooth_weight=0.4,
+        reverse_penalty=4.0,
+        sample_step=1,
+        inflation_sectors=1,
     ):
+        self.sector_count = max(8, int(round(360.0 / max(sector_angle_deg, 1.0))))
+        self.sector_angle = 2.0 * math.pi / self.sector_count
         self.influence_radius = influence_radius
-        self.max_offset = max_offset
-        self.gain = gain
+        self.safe_distance = safe_distance
+        self.goal_weight = goal_weight
+        self.obstacle_weight = obstacle_weight
+        self.smooth_weight = smooth_weight
+        self.reverse_penalty = reverse_penalty
         self.sample_step = max(1, sample_step)
-        self.emergency_radius = emergency_radius
-        self.tangent_gain = tangent_gain
-        self.path_sector_angle = path_sector_angle
-        self.locked_turn_side = None
-        self.lock_release_distance = self.influence_radius * 0.9
+        self.inflation_sectors = max(0, inflation_sectors)
+        self.previous_heading_body = 0.0
 
     def compute_offset(self, scan, yaw=0.0):
-        offset_x, offset_y, _, _, _ = self.compute_avoidance(scan, yaw, (1.0, 0.0))
+        offset_x, offset_y, _, _, _, _, _ = self.compute_avoidance(
+            scan,
+            yaw,
+            (1.0, 0.0),
+            0.4,
+        )
         return offset_x, offset_y
 
-    def compute_avoidance(self, scan, yaw=0.0, goal_body_vector=None):
-        if scan is None:
-            return 0.0, 0.0, False, float("inf"), "none"
+    def compute_avoidance(self, scan, yaw=0.0, goal_body_vector=None, step_distance=0.4):
+        selected_heading, active, min_distance, goal_diff, selected_distance, status, speed_scale = self.select_heading(
+            scan,
+            goal_body_vector,
+        )
+        move_distance = max(step_distance, 0.0) * speed_scale
+        body_x = math.cos(selected_heading) * move_distance
+        body_y = math.sin(selected_heading) * move_distance
+        map_x, map_y = self.rotate_body_to_map(body_x, body_y, yaw)
+        return (
+            map_x,
+            map_y,
+            active,
+            min_distance,
+            status,
+            math.degrees(selected_heading),
+            math.degrees(goal_diff),
+        )
 
+    def select_heading(self, scan, goal_body_vector=None):
         goal_x, goal_y = self.normalize_body_vector(goal_body_vector)
-        goal_angle = math.atan2(goal_y, goal_x)
+        goal_heading = math.atan2(goal_y, goal_x)
 
-        body_x = 0.0
-        body_y = 0.0
+        if scan is None:
+            self.previous_heading_body = goal_heading
+            return goal_heading, False, float("inf"), 0.0, self.influence_radius, "scan 없음", 1.0
+
+        sector_distances, min_distance = self.build_histogram(scan)
+        active = min_distance <= self.influence_radius
+
+        if not active:
+            self.previous_heading_body = goal_heading
+            return goal_heading, False, min_distance, 0.0, self.influence_radius, "clear", 1.0
+
+        candidates = []
+        for sector_index, distance in enumerate(sector_distances):
+            heading = self.sector_center(sector_index)
+            goal_diff = abs(self.angle_diff(heading, goal_heading))
+            smooth_diff = abs(self.angle_diff(heading, self.previous_heading_body))
+            obstacle_cost = self.obstacle_cost(distance)
+            reverse_cost = self.reverse_cost(goal_diff)
+            cost = (
+                self.goal_weight * goal_diff / math.pi
+                + self.obstacle_weight * obstacle_cost
+                + self.smooth_weight * smooth_diff / math.pi
+                + reverse_cost
+            )
+            candidates.append(
+                {
+                    "heading": heading,
+                    "distance": distance,
+                    "goal_diff": goal_diff,
+                    "cost": cost,
+                    "safe": distance >= self.safe_distance,
+                    "forward": goal_diff <= math.pi / 2.0,
+                }
+            )
+
+        safe_candidates = [candidate for candidate in candidates if candidate["safe"]]
+        if safe_candidates:
+            usable_candidates = safe_candidates
+            status = "avoid"
+            speed_scale = 1.0
+        else:
+            forward_candidates = [candidate for candidate in candidates if candidate["forward"]]
+            usable_candidates = forward_candidates if forward_candidates else candidates
+            status = "tight"
+            speed_scale = 0.35 if min_distance > self.safe_distance * 0.5 else 0.0
+
+        selected = min(usable_candidates, key=lambda candidate: candidate["cost"])
+        selected_heading = self.clamp_to_forward_arc(selected["heading"], goal_heading)
+        selected_goal_diff = abs(self.angle_diff(selected_heading, goal_heading))
+        self.previous_heading_body = selected_heading
+        return (
+            selected_heading,
+            True,
+            min_distance,
+            selected_goal_diff,
+            selected["distance"],
+            status,
+            speed_scale,
+        )
+
+    def build_histogram(self, scan):
+        sector_distances = [self.influence_radius for _ in range(self.sector_count)]
         min_distance = float("inf")
-        path_min_distance = float("inf")
-        obstacle_detected = False
-        path_blocked = False
-
-        left_clearance = 0.0
-        right_clearance = 0.0
-        left_count = 0
-        right_count = 0
 
         for index in range(0, len(scan.ranges), self.sample_step):
             distance = scan.ranges[index]
             if not self.is_valid_distance(distance, scan):
                 continue
 
-            angle = scan.angle_min + index * scan.angle_increment
-            relative_angle = self.angle_diff(angle, goal_angle)
-            clearance = min(distance, self.influence_radius)
-
-            if 0.0 < relative_angle <= math.pi / 2.0:
-                left_clearance += clearance
-                left_count += 1
-            elif -math.pi / 2.0 <= relative_angle < 0.0:
-                right_clearance += clearance
-                right_count += 1
-
             min_distance = min(min_distance, distance)
             if distance > self.influence_radius:
                 continue
 
-            obstacle_detected = True
-            direction_x = -math.cos(angle)
-            direction_y = -math.sin(angle)
-            strength = self.gain * (1.0 / distance - 1.0 / self.influence_radius) / (distance * distance)
-            body_x += direction_x * strength
-            body_y += direction_y * strength
+            angle = scan.angle_min + index * scan.angle_increment
+            sector_index = self.angle_to_sector(angle)
+            for offset in range(-self.inflation_sectors, self.inflation_sectors + 1):
+                inflated_index = (sector_index + offset) % self.sector_count
+                sector_distances[inflated_index] = min(sector_distances[inflated_index], distance)
 
-            if abs(relative_angle) <= self.path_sector_angle:
-                path_blocked = True
-                path_min_distance = min(path_min_distance, distance)
+        return sector_distances, min_distance
 
-        if not obstacle_detected:
-            self.locked_turn_side = None
-            return 0.0, 0.0, False, min_distance, "none"
+    def obstacle_cost(self, distance):
+        if distance >= self.influence_radius:
+            return 0.0
+        if distance <= self.safe_distance:
+            return 1.0 + (self.safe_distance - distance) / max(self.safe_distance, 0.01) * 3.0
+        return (self.influence_radius - distance) / max(self.influence_radius - self.safe_distance, 0.01)
 
-        left_score = left_clearance / max(left_count, 1)
-        right_score = right_clearance / max(right_count, 1)
-        measured_turn_side = "left" if left_score >= right_score else "right"
-        turn_side = measured_turn_side
+    def reverse_cost(self, goal_diff):
+        if goal_diff <= math.pi / 2.0:
+            return 0.0
+        reverse_ratio = (goal_diff - math.pi / 2.0) / (math.pi / 2.0)
+        return self.reverse_penalty * (1.0 + reverse_ratio * reverse_ratio)
 
-        if path_blocked:
-            if self.locked_turn_side is None or min_distance >= self.lock_release_distance:
-                self.locked_turn_side = measured_turn_side
-            turn_side = self.locked_turn_side
+    def angle_to_sector(self, angle):
+        normalized = (angle + math.pi) % (2.0 * math.pi)
+        return int(normalized / self.sector_angle) % self.sector_count
 
-            if path_min_distance == float("inf"):
-                path_min_distance = min_distance
-            tangent_scale = self.scale_by_distance(path_min_distance)
-            if turn_side == "left":
-                tangent_x = -goal_y
-                tangent_y = goal_x
-            else:
-                tangent_x = goal_y
-                tangent_y = -goal_x
-            body_x += tangent_x * self.tangent_gain * tangent_scale
-            body_y += tangent_y * self.tangent_gain * tangent_scale
-        else:
-            self.locked_turn_side = None
-            turn_side = "repulse"
+    def sector_center(self, sector_index):
+        return -math.pi + (sector_index + 0.5) * self.sector_angle
 
-        if min_distance <= self.emergency_radius:
-            emergency_scale = 1.0 + (self.emergency_radius - min_distance) / max(self.emergency_radius, 0.01)
-            body_x *= emergency_scale
-            body_y *= emergency_scale
-
-        body_x, body_y = self.limit_vector(body_x, body_y, self.max_offset)
-        map_x, map_y = self.rotate_body_to_map(body_x, body_y, yaw)
-        return map_x, map_y, True, min_distance, turn_side
+    def clamp_to_forward_arc(self, heading, goal_heading):
+        diff = self.angle_diff(heading, goal_heading)
+        if abs(diff) <= math.pi / 2.0:
+            return heading
+        limited_diff = math.copysign(math.pi / 2.0, diff)
+        return self.angle_diff(goal_heading + limited_diff, 0.0)
 
     def is_valid_distance(self, distance, scan):
         if math.isinf(distance) or math.isnan(distance):
@@ -257,20 +309,8 @@ class APFAvoidance:
             return 1.0, 0.0
         return x / length, y / length
 
-    def scale_by_distance(self, distance):
-        usable_range = max(self.influence_radius - self.emergency_radius, 0.01)
-        scale = (self.influence_radius - distance) / usable_range
-        return min(max(scale, 0.0), 1.0)
-
     def angle_diff(self, angle, reference):
         return (angle - reference + math.pi) % (2.0 * math.pi) - math.pi
-
-    def limit_vector(self, x, y, limit):
-        length = math.hypot(x, y)
-        if length <= limit or length == 0.0:
-            return x, y
-        scale = limit / length
-        return x * scale, y * scale
 
     def rotate_body_to_map(self, body_x, body_y, yaw):
         cos_yaw = math.cos(yaw)
@@ -291,10 +331,7 @@ class MissionController:
         self.landing_min_altitude = rospy.get_param("~landing_min_altitude", 0.35)
         self.mode_retry_interval = rospy.Duration(rospy.get_param("~mode_retry_interval", 5.0))
         self.initial_setpoint_count = rospy.get_param("~initial_setpoint_count", 100)
-        self.local_setpoint_distance = max(rospy.get_param("~local_setpoint_distance", 0.5), 0.2)
-        self.path_attraction_weight = min(max(rospy.get_param("~path_attraction_weight", 0.85), 0.0), 1.0)
-        self.min_forward_step = max(rospy.get_param("~min_forward_step", 0.08), 0.0)
-        self.max_lateral_step = max(rospy.get_param("~max_lateral_step", 0.55), 0.1)
+        self.local_setpoint_distance = max(rospy.get_param("~local_setpoint_distance", 0.4), 0.2)
         self.nearest_search_window = rospy.get_param("~nearest_search_window", 2)
 
         self.current_state = State()
@@ -313,13 +350,14 @@ class MissionController:
             reach_threshold=rospy.get_param("~reach_threshold", 0.3),
             nearest_search_window=self.nearest_search_window,
         )
-        self.avoidance = APFAvoidance(
-            influence_radius=rospy.get_param("~apf_influence_radius", 3.0),
-            max_offset=rospy.get_param("~apf_max_offset", 0.9),
-            gain=rospy.get_param("~apf_gain", 0.7),
-            emergency_radius=rospy.get_param("~apf_emergency_radius", 0.55),
-            tangent_gain=rospy.get_param("~apf_tangent_gain", 0.75),
-            path_sector_angle=rospy.get_param("~apf_path_sector_angle", 0.65),
+        self.avoidance = VFHObstacleAvoidance(
+            sector_angle_deg=rospy.get_param("~vfh_sector_angle_deg", 10.0),
+            influence_radius=rospy.get_param("~vfh_influence_radius", 2.2),
+            safe_distance=rospy.get_param("~vfh_safe_distance", 0.65),
+            goal_weight=rospy.get_param("~vfh_goal_weight", 1.0),
+            obstacle_weight=rospy.get_param("~vfh_obstacle_weight", 2.0),
+            smooth_weight=rospy.get_param("~vfh_smooth_weight", 0.4),
+            reverse_penalty=rospy.get_param("~vfh_reverse_penalty", 4.0),
         )
 
         rospy.Subscriber("/mavros/state", State, self.state_callback)
@@ -385,14 +423,6 @@ class MissionController:
         cos_yaw = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         return math.atan2(sin_yaw, cos_yaw)
 
-    def rotate_body_to_map(self, body_x, body_y):
-        yaw = self.get_yaw()
-        cos_yaw = math.cos(yaw)
-        sin_yaw = math.sin(yaw)
-        map_x = body_x * cos_yaw - body_y * sin_yaw
-        map_y = body_x * sin_yaw + body_y * cos_yaw
-        return map_x, map_y
-
     def rotate_map_to_body(self, map_x, map_y):
         yaw = self.get_yaw()
         cos_yaw = math.cos(yaw)
@@ -401,32 +431,13 @@ class MissionController:
         body_y = -map_x * sin_yaw + map_y * cos_yaw
         return body_x, body_y
 
-    def limit_vector(self, x, y, limit):
-        length = math.hypot(x, y)
-        if length <= limit or length == 0.0:
-            return x, y
-        scale = limit / length
-        return x * scale, y * scale
-
-    def keep_waypoint_progress(self, desired_x, desired_y, goal_x, goal_y, step_distance, allow_stop=False):
-        goal_length = math.hypot(goal_x, goal_y)
-        if goal_length <= 0.05:
-            return desired_x, desired_y
-
-        goal_unit_x = goal_x / goal_length
-        goal_unit_y = goal_y / goal_length
-        forward = desired_x * goal_unit_x + desired_y * goal_unit_y
-        lateral_x = desired_x - forward * goal_unit_x
-        lateral_y = desired_y - forward * goal_unit_y
-
-        min_forward = 0.0 if allow_stop else min(self.min_forward_step, step_distance)
-        forward = max(forward, min_forward)
-        lateral_x, lateral_y = self.limit_vector(lateral_x, lateral_y, self.max_lateral_step)
-
-        return (
-            forward * goal_unit_x + lateral_x,
-            forward * goal_unit_y + lateral_y,
-        )
+    def rotate_body_to_map(self, body_x, body_y):
+        yaw = self.get_yaw()
+        cos_yaw = math.cos(yaw)
+        sin_yaw = math.sin(yaw)
+        map_x = body_x * cos_yaw - body_y * sin_yaw
+        map_y = body_x * sin_yaw + body_y * cos_yaw
+        return map_x, map_y
 
     def get_initial_setpoint(self):
         target = self.path_follower.get_start_pose()
@@ -464,53 +475,34 @@ class MissionController:
 
         if goal_distance > 0.05:
             step_distance = min(self.local_setpoint_distance, goal_distance)
-            path_dx = goal_dx / goal_distance * step_distance
-            path_dy = goal_dy / goal_distance * step_distance
+            goal_body_vector = self.rotate_map_to_body(goal_dx, goal_dy)
+            desired_dx, desired_dy, avoiding, min_distance, status, selected_heading, goal_diff = self.avoidance.compute_avoidance(
+                self.latest_scan,
+                self.get_yaw(),
+                goal_body_vector,
+                step_distance,
+            )
         else:
-            step_distance = 0.0
-            path_dx = 0.0
-            path_dy = 0.0
-
-        goal_body_vector = self.rotate_map_to_body(goal_dx, goal_dy)
-        avoid_x, avoid_y, avoiding, min_distance, turn_side = self.avoidance.compute_avoidance(
-            self.latest_scan,
-            self.get_yaw(),
-            goal_body_vector,
-        )
+            desired_dx = 0.0
+            desired_dy = 0.0
+            avoiding = False
+            min_distance = float("inf")
+            status = "target"
+            selected_heading = 0.0
+            goal_diff = 0.0
 
         if avoiding:
-            emergency = min_distance <= self.avoidance.emergency_radius
-            if emergency:
-                desired_dx = avoid_x
-                desired_dy = avoid_y
-                mode_text = "긴급 회피"
-            else:
-                desired_dx = path_dx * self.path_attraction_weight + avoid_x
-                desired_dy = path_dy * self.path_attraction_weight + avoid_y
-                mode_text = "회피 경로 추종"
-
-            desired_dx, desired_dy = self.keep_waypoint_progress(
-                desired_dx,
-                desired_dy,
-                goal_dx,
-                goal_dy,
-                step_distance,
-                allow_stop=emergency,
-            )
-            max_step = max(self.local_setpoint_distance, self.avoidance.max_offset)
             rospy.loginfo_throttle(
                 0.5,
-                "APF %s: 최소 거리 %.2f m, 우회 %s, 보정 후 setpoint offset x %.2f m, y %.2f m",
-                mode_text,
+                "VFH 회피 경로 추종: 상태 %s, 최소 거리 %.2f m, 선택 heading %.1f deg, 목표 차이 %.1f deg, setpoint offset x %.2f m, y %.2f m",
+                status,
                 min_distance,
-                turn_side,
+                selected_heading,
+                goal_diff,
                 desired_dx,
                 desired_dy,
             )
         else:
-            desired_dx = path_dx
-            desired_dy = path_dy
-            max_step = self.local_setpoint_distance
             rospy.loginfo_throttle(
                 3.0,
                 "경로 추종 중: 로컬 setpoint offset x %.2f m, y %.2f m",
@@ -518,7 +510,6 @@ class MissionController:
                 desired_dy,
             )
 
-        desired_dx, desired_dy = self.limit_vector(desired_dx, desired_dy, max_step)
         pose = self.make_pose(
             current_x + desired_dx,
             current_y + desired_dy,
