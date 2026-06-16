@@ -16,7 +16,7 @@ class LandingDetectorNode:
         rospy.init_node("landing_detector")
 
         self.image_topic = rospy.get_param("~image_topic", "/downward_camera/image_raw")
-        self.horizontal_fov = rospy.get_param("~horizontal_fov", 1.3962634)
+        self.horizontal_fov = rospy.get_param("~horizontal_fov", 1.9198622)
         self.default_altitude = rospy.get_param("~default_altitude", 2.5)
         self.min_area = rospy.get_param("~min_area", 300.0)
         self.offset_gain = rospy.get_param("~offset_gain", 1.0)
