@@ -686,7 +686,7 @@
         <visualize>true</visualize>
 
         <camera>
-          <horizontal_fov>1.3962634</horizontal_fov>
+          <horizontal_fov>1.9198622</horizontal_fov>
           <image>
             <width>640</width>
             <height>480</height>
