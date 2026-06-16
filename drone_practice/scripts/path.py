@@ -9,9 +9,16 @@ from geometry_msgs.msg import PoseStamped
 
 
 class PurePursuitPathFollower:
-    def __init__(self, csv_path=None, lookahead_distance=1.0, reach_threshold=0.3):
+    def __init__(
+        self,
+        csv_path=None,
+        lookahead_distance=1.0,
+        reach_threshold=0.3,
+        nearest_search_window=2,
+    ):
         self.lookahead_distance = lookahead_distance
         self.reach_threshold = reach_threshold
+        self.nearest_search_window = max(1, nearest_search_window)
         self.path = []
         self.index = 0
         self.finished = False
@@ -66,8 +73,9 @@ class PurePursuitPathFollower:
     def find_nearest_index(self, current_pose):
         best_index = self.index
         best_distance = float("inf")
+        search_end = min(len(self.path), self.index + self.nearest_search_window + 1)
 
-        for index in range(self.index, len(self.path)):
+        for index in range(self.index, search_end):
             distance = self.distance_2d(current_pose, self.path[index])
             if distance < best_distance:
                 best_distance = distance
