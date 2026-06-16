@@ -1,3 +1,9 @@
+#!/usr/bin/env python3
+
+import math
+
+import cv2
+import numpy as np
 import rospy
 from cv_bridge import CvBridge, CvBridgeError
 from geometry_msgs.msg import Point, PoseStamped
