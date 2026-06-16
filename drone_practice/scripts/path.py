@@ -89,15 +89,21 @@ class PurePursuitPathFollower:
         if self.finished:
             return self.get_final_pose()
 
+        target_index = self.find_lookahead_index(current_pose)
+        self.index = max(self.index, target_index)
+
         final_pose = self.path[-1]
-        if self.distance_3d(current_pose, final_pose) <= self.reach_threshold:
+        final_index = len(self.path) - 1
+        final_reached = (
+            self.index >= final_index
+            and self.distance_3d(current_pose, final_pose) <= self.reach_threshold
+        )
+        if final_reached:
             self.finished = True
-            self.index = len(self.path) - 1
+            self.index = final_index
             rospy.loginfo("Pure Pursuit 경로 추종 완료")
             return self.get_final_pose()
 
-        target_index = self.find_lookahead_index(current_pose)
-        self.index = max(self.index, target_index)
         return self.copy_pose(self.path[target_index])
 
     def get_start_pose(self):
