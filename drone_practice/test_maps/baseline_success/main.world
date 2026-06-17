@@ -1,6 +1,6 @@
 <?xml version="1.0" ?>
 <sdf version="1.6">
-  <world name="practice_world">
+  <world name="main_world">
 
     <!-- ===== 기본 환경 ===== -->
     <include><uri>model://sun</uri></include>
@@ -60,7 +60,7 @@
     <include>
       <uri>model://landing_pad</uri>
       <name>landing_pad</name>
-      <pose>12.0 5.0 0 0 0 0</pose>
+      <pose>12.6 5.0 0 0 0 0</pose>
     </include>
 
     <!-- 카메라 시점 (Gazebo에서 보기 좋게) -->
@@ -71,52 +71,78 @@
     </gui>
 
   
-    <!-- ===== TEST OBSTACLES spacing >= 5m ===== -->
 
-    <model name="obstacle_1">
-      <static>true</static>
-      <pose>3.0 0.0 1.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision"><geometry><box><size>1 1 3</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>1 1 3</size></box></geometry></visual>
-      </link>
-    </model>
+<!-- ===== ZigZag Test1 Obstacles ===== -->
 
-    <model name="obstacle_2">
-      <static>true</static>
-      <pose>8.0 0.0 1.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision"><geometry><box><size>1 1 3</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>1 1 3</size></box></geometry></visual>
-      </link>
-    </model>
+<model name="obstacle_test1_1">
+  <static>true</static>
+  <pose>5 0 1.5 0 0 0</pose>
+  <link name="link">
+    <collision name="collision">
+      <geometry><box><size>1 1 3</size></box></geometry>
+    </collision>
+    <visual name="visual">
+      <geometry><box><size>1 1 3</size></box></geometry>
+    </visual>
+  </link>
+</model>
 
-    <model name="obstacle_3">
-      <static>true</static>
-      <pose>13.0 0.0 1.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision"><geometry><box><size>1 1 3</size></box></geometry></collision>
-        <visual name="visual"><geometry><box><size>1 1 3</size></box></geometry></visual>
-      </link>
-    </model>
 
-    <model name="obstacle_4">
-      <static>true</static>
-      <pose>5.0 6.0 1.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision"><geometry><cylinder><radius>0.5</radius><length>3</length></cylinder></geometry></collision>
-        <visual name="visual"><geometry><cylinder><radius>0.5</radius><length>3</length></cylinder></geometry></visual>
-      </link>
-    </model>
+<model name="obstacle_test1_2">
+  <static>true</static>
+  <pose>-5 6 1.5 0 0 0</pose>
+  <link name="link">
+    <collision name="collision">
+      <geometry><box><size>1 1 3</size></box></geometry>
+    </collision>
+    <visual name="visual">
+      <geometry><box><size>1 1 3</size></box></geometry>
+    </visual>
+  </link>
+</model>
 
-    <model name="obstacle_5">
-      <static>true</static>
-      <pose>11.0 6.0 1.5 0 0 0</pose>
-      <link name="link">
-        <collision name="collision"><geometry><cylinder><radius>0.5</radius><length>3</length></cylinder></geometry></collision>
-        <visual name="visual"><geometry><cylinder><radius>0.5</radius><length>3</length></cylinder></geometry></visual>
-      </link>
-    </model>
+
+<model name="obstacle_test1_3">
+  <static>true</static>
+  <pose>10 0 1.5 0 0 0</pose>
+  <link name="link">
+    <collision name="collision">
+      <geometry><cylinder><radius>0.5</radius><length>3</length></cylinder></geometry>
+    </collision>
+    <visual name="visual">
+      <geometry><cylinder><radius>0.5</radius><length>3</length></cylinder></geometry>
+    </visual>
+  </link>
+</model>
+
+
+<model name="obstacle_test1_4">
+  <static>true</static>
+  <pose>5 -7 1.5 0 0 0</pose>
+  <link name="link">
+    <collision name="collision">
+      <geometry><box><size>1 1 3</size></box></geometry>
+    </collision>
+    <visual name="visual">
+      <geometry><box><size>1 1 3</size></box></geometry>
+    </visual>
+  </link>
+</model>
+
+
+<model name="obstacle_test1_5">
+  <static>true</static>
+  <pose>-10 -2 1.5 0 0 0</pose>
+  <link name="link">
+    <collision name="collision">
+      <geometry><cylinder><radius>0.5</radius><length>3</length></cylinder></geometry>
+    </collision>
+    <visual name="visual">
+      <geometry><cylinder><radius>0.5</radius><length>3</length></cylinder></geometry>
+    </visual>
+  </link>
+</model>
+
 
 </world>
 </sdf>
