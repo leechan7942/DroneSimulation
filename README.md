@@ -16,7 +16,7 @@ PX4 SITL + Gazebo + ROS Noetic 환경에서 IRIS 드론을 사용하여 주어�
 * IRIS 드론 자동 이륙
 * Pure Pursuit 기반 경로 추종
 * Local A* 기반 장애물 회피
-* 랜딩패드 탐지 및 정렬
+* 카메라 이미지 기반 랜딩패드 탐지 및 정렬
 * AUTO.LAND 모드 전환을 통한 자동 착륙
 * 테스트맵 적용 스크립트를 통한 world/csv 교체 테스트
 
