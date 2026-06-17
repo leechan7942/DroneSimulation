@@ -21,6 +21,7 @@ PX4 SITL + Gazebo + ROS Noetic 환경에서 IRIS 드론을 사용하여 주어�
 * LiDAR 기반 장애물 감지
 * Local A* 기반 장애물 회피
 * 회피 후 원래 CSV 경로로 복귀
+* 회피 후 CSV 경로 index 보정
 * 랜딩패드 탐지 및 정렬
 * AUTO.LAND 모드 전환을 통한 자동 착륙
 * 테스트맵 적용 스크립트를 통한 world/csv 교체 테스트
@@ -58,7 +59,10 @@ DroneSimulation/
     │   ├── map_landing_precision/
     │   │   ├── main.world
     │   │   └── practice_path.csv
-    │   └── map_final_challenge/
+    │   ├── map_final_challenge/
+    │   │   ├── main.world
+    │   │   └── practice_path.csv
+    │   └── map_avoidance_unit/
     │       ├── main.world
     │       └── practice_path.csv
     ├── tools/
@@ -77,10 +81,23 @@ docker start px4_final_container
 docker exec -it px4_final_container bash
 ```
 
-컨테이너 내부에서 ROS 환경을 적용합니다.
+컨테이너 내부에서 ROS/PX4/Gazebo 환경을 적용합니다.
 
 ```bash
 source ~/.bashrc
+```
+
+`mavlink_sitl_gazebo` 패키지가 정상 인식되는지 확인합니다.
+
+```bash
+rospack profile
+rospack find mavlink_sitl_gazebo
+```
+
+정상적으로 설정되어 있으면 다음과 유사한 경로가 출력됩니다.
+
+```text
+/root/PX4-Autopilot/Tools/sitl_gazebo
 ```
 
 Gazebo에서 custom marker model을 찾을 수 있도록 모델 경로를 설정합니다.
@@ -100,7 +117,7 @@ export GAZEBO_MODEL_PATH=$GAZEBO_MODEL_PATH:/root/catkin_ws/src/DroneSimulation/
 ```bash
 cd ~/catkin_ws
 catkin_make
-source devel/setup.bash
+source ~/.bashrc
 ```
 
 시뮬레이션을 실행합니다.
@@ -138,6 +155,16 @@ drone_practice/mission/practice_path.csv
 - waypoint marker 위치를 직접 목표점으로 설정
 ```
 
+## 장애물 회피 및 경로 복귀 방식
+
+장애물 감지는 LiDAR 데이터를 기반으로 수행합니다. 경로 주변에 장애물이 감지되면 `local_grid_planner.py`의 Local A* 기반 회피 경로를 사용하여 로컬 setpoint를 생성합니다.
+
+회피가 끝난 뒤에는 다시 CSV 경로점 기반 추종으로 복귀합니다. 이때 장애물 회피 중 드론이 원래 CSV 경로에서 옆으로 벗어나면, 기존 CSV index가 뒤쪽에 남아 드론이 정체될 수 있습니다.
+
+이를 보완하기 위해 `main.py`에는 현재 드론 위치 기준으로 가까운 앞쪽 CSV 경로점을 탐색하고, 필요한 경우 경로 index를 보정하는 로직을 추가했습니다.
+
+이 보강은 waypoint marker를 목표점으로 사용하는 방식이 아니라, CSV 경로점 기반 추종을 안정화하기 위한 처리입니다.
+
 ## 기본 경로 및 랜딩패드 위치
 
 기본 경로 파일은 다음 CSV를 사용합니다.
@@ -170,7 +197,8 @@ drone_practice/test_maps/
 ├── map_obstacle_dense
 ├── map_straight
 ├── map_landing_precision
-└── map_final_challenge
+├── map_final_challenge
+└── map_avoidance_unit
 ```
 
 각 테스트맵의 목적은 다음과 같습니다.
@@ -180,6 +208,7 @@ drone_practice/test_maps/
 * `map_straight`: 회피 후 원래 경로로 복귀하는지 확인
 * `map_landing_precision`: 랜딩패드 접근 및 착륙 정렬 안정성 확인
 * `map_final_challenge`: CSV 경로, waypoint marker, 장애물 위치, landing pad 위치를 모두 변경한 종합 검증용 맵
+* `map_avoidance_unit`: 직선 CSV 경로 위에 장애물을 배치하여 Local A* 회피 및 회피 후 CSV 경로 복귀를 확인하는 단위 검증용 맵
 
 ## 테스트맵 적용 방법
 
@@ -199,6 +228,7 @@ cd ~/catkin_ws/src/DroneSimulation/drone_practice
 ./tools/apply_test_map.sh map_straight
 ./tools/apply_test_map.sh map_landing_precision
 ./tools/apply_test_map.sh map_final_challenge
+./tools/apply_test_map.sh map_avoidance_unit
 ```
 
 테스트 후 기본 실행 상태로 되돌리려면 다음 명령어를 실행합니다.
@@ -211,6 +241,7 @@ cd ~/catkin_ws/src/DroneSimulation/drone_practice
 
 ```bash
 cd ~/catkin_ws
+source ~/.bashrc
 roslaunch drone_practice practice.launch
 ```
 
@@ -234,6 +265,37 @@ roslaunch drone_practice practice.launch
 cd ~/catkin_ws/src/DroneSimulation/drone_practice
 ./tools/apply_test_map.sh map_final_challenge
 cd ~/catkin_ws
+source ~/.bashrc
+roslaunch drone_practice practice.launch
+```
+
+테스트 후 기본 맵으로 되돌립니다.
+
+```bash
+cd ~/catkin_ws/src/DroneSimulation/drone_practice
+./tools/apply_test_map.sh baseline_success
+```
+
+## Avoidance Unit 테스트맵
+
+`map_avoidance_unit`은 회피 알고리즘 단위 검증을 위해 만든 테스트맵입니다.
+
+주요 특징은 다음과 같습니다.
+
+* 직선 CSV 경로 사용
+* CSV 경로 위에 장애물을 배치하여 회피 필요 상황 구성
+* Pure Pursuit만 사용할 경우 충돌 가능성이 있는 구조
+* Local A*가 작동하면 장애물을 우회한 뒤 원래 CSV 경로로 복귀
+* 회피 후 CSV 경로 index 보정 로직 검증
+* waypoint marker는 제어용이 아니라 경로 통과 확인용으로만 배치
+
+적용 방법은 다음과 같습니다.
+
+```bash
+cd ~/catkin_ws/src/DroneSimulation/drone_practice
+./tools/apply_test_map.sh map_avoidance_unit
+cd ~/catkin_ws
+source ~/.bashrc
 roslaunch drone_practice practice.launch
 ```
 
@@ -257,7 +319,8 @@ cd ~/catkin_ws/src/DroneSimulation/drone_practice
 * Takeoff detected 확인
 * CSV 경로 추종 완료
 * Local A* 회피 동작 확인
-* 회피 후 경로 복귀 확인
+* 회피 후 CSV 경로 복귀 확인
+* 회피 후 CSV 경로 index 보정 동작 확인
 * 랜딩패드 탐지 및 정렬 확인
 * AUTO.LAND 모드 전환 성공
 
@@ -268,6 +331,8 @@ Pure Pursuit 경로 로드 완료
 OFFBOARD 모드 전환 요청 성공
 기체 ARM 요청 성공
 Takeoff detected
+Local A* 회피 경로 추종
+CSV 경로 복귀 인덱스 보정
 Pure Pursuit 경로 추종 완료
 랜딩패드 탐지 활성화
 랜딩패드 정렬 완료: 하강 중
@@ -306,6 +371,28 @@ xhost +local:root
 export QT_X11_NO_MITSHM=1
 ```
 
+## `mavlink_sitl_gazebo` 패키지 오류 대응
+
+다음과 같은 오류가 발생할 수 있습니다.
+
+```text
+Resource not found: mavlink_sitl_gazebo
+```
+
+이 경우 PX4 Gazebo package path가 현재 터미널에 적용되지 않은 것이므로 다음 명령어를 실행합니다.
+
+```bash
+source ~/.bashrc
+rospack profile
+rospack find mavlink_sitl_gazebo
+```
+
+정상 출력 예시는 다음과 같습니다.
+
+```text
+/root/PX4-Autopilot/Tools/sitl_gazebo
+```
+
 ## Gazebo model URI 오류 대응
 
 다음과 같은 오류가 발생할 수 있습니다.
@@ -341,6 +428,7 @@ echo $GAZEBO_MODEL_PATH
 * 테스트맵은 연습 및 검증용입니다.
 * waypoint marker는 제어용 목표점이 아니라 평가 및 시각화용 표시입니다.
 * 최종 경로 추종은 CSV 파일의 경로점을 기준으로 수행됩니다.
+* 장애물 회피는 고도를 높이는 방식이 아니라 수평 방향 우회 방식으로 수행합니다.
 * 최종 실행은 단일 명령어로 수행됩니다.
 
 ```bash

@@ -86,6 +86,33 @@ class PurePursuitPathFollower:
         dz = pose_a.pose.position.z - pose_b.pose.position.z
         return math.sqrt(dx * dx + dy * dy + dz * dz)
 
+    def find_nearest_forward_index(self, current_pose, max_search_ahead=120):
+        """
+        현재 드론 위치에서 가까운 CSV 경로점을 현재 index 이후 구간에서 찾는다.
+        장애물 회피 후 기존 index가 뒤에 남아 있는 경우, 경로 복귀를 위해 사용한다.
+        """
+        if not self.path:
+            return self.index, float("inf")
+
+        start_index = max(0, min(self.index, len(self.path) - 1))
+        end_index = min(len(self.path), start_index + max_search_ahead)
+
+        current = current_pose.pose.position
+        best_index = start_index
+        best_distance = float("inf")
+
+        for idx in range(start_index, end_index):
+            path_point = self.path[idx].pose.position
+            dx = current.x - path_point.x
+            dy = current.y - path_point.y
+            distance = math.hypot(dx, dy)
+
+            if distance < best_distance:
+                best_distance = distance
+                best_index = idx
+
+        return best_index, best_distance
+
     def has_passed_waypoint(self, current_pose, waypoint_index):
         if waypoint_index <= 0:
             return False
@@ -120,6 +147,23 @@ class PurePursuitPathFollower:
                 and self.has_passed_waypoint(current_pose, self.index)
             )
             if not reached and not passed:
+                nearest_index, nearest_distance = self.find_nearest_forward_index(
+                    current_pose
+                )
+
+                # 장애물 회피 후 기존 index가 뒤에 남아 있는 경우,
+                # 현재 위치와 가까운 앞쪽 CSV 경로점으로 index를 보정한다.
+                if nearest_index > self.index and nearest_distance <= self.waypoint_pass_threshold:
+                    rospy.loginfo_throttle(
+                        1.0,
+                        "CSV 경로 복귀 인덱스 보정: %d -> %d, 경로 거리 %.2f m",
+                        self.index + 1,
+                        nearest_index + 1,
+                        nearest_distance,
+                    )
+                    self.index = nearest_index
+                    continue
+
                 break
 
             if is_final_waypoint:
