@@ -7,16 +7,20 @@ import math
 class LocalGridPlanner:
     def __init__(
         self,
-        resolution=0.25,
-        forward_range=4.0,
-        side_range=3.5,
-        backward_range=0.6,
-        obstacle_inflation=0.55,
-        clearance_radius=1.1,
-        local_goal_distance=3.0,
-        path_lookahead=0.9,
-        min_target_distance=0.8,
+        resolution=0.30,
+        forward_range=7.0,
+        side_range=6.0,
+        backward_range=2.0,
+        obstacle_inflation=0.40,
+        clearance_radius=0.75,
+        local_goal_distance=5.0,
+        path_lookahead=0.8,
+        min_target_distance=0.5,
         sample_step=1,
+        backward_penalty=1.5,
+        fallback_max_angle_deg=180.0,
+        fallback_angle_step_deg=15.0,
+        emergency_escape_distance=0.25,
         side_hysteresis_margin=0.35,
         side_hold_bonus=0.25,
         side_switch_penalty=0.20,
@@ -34,7 +38,10 @@ class LocalGridPlanner:
         self.sample_step = max(1, sample_step)
         self.start_clear_radius = 0.35
         self.clearance_weight = 0.8
-        self.backward_penalty = 4.0
+        self.backward_penalty = max(0.0, backward_penalty)
+        self.fallback_max_angle_deg = min(180.0, max(90.0, fallback_max_angle_deg))
+        self.fallback_angle_step_deg = max(1.0, fallback_angle_step_deg)
+        self.emergency_escape_distance = max(0.10, emergency_escape_distance)
         self.side_hysteresis_margin = side_hysteresis_margin
         self.side_hold_bonus = side_hold_bonus
         self.side_switch_penalty = side_switch_penalty
@@ -54,11 +61,11 @@ class LocalGridPlanner:
             scan,
             yaw,
             (1.0, 0.0),
-            0.35,
+            0.30,
         )
         return offset_x, offset_y
 
-    def compute_avoidance(self, scan, yaw=0.0, goal_body_vector=None, step_distance=0.35):
+    def compute_avoidance(self, scan, yaw=0.0, goal_body_vector=None, step_distance=0.30):
         goal_x, goal_y, goal_length = self.normalize_goal(goal_body_vector)
         blocked, min_distance = self.build_occupancy(scan)
         start_cell = (0, 0)
@@ -91,7 +98,11 @@ class LocalGridPlanner:
                     (goal_x, goal_y),
                     step_distance,
                 )
-                status = "fallback" if body_x or body_y else "blocked_hold"
+                if body_x or body_y:
+                    progress = body_x * goal_x + body_y * goal_y
+                    status = "fallback_reverse" if progress < -0.01 else "fallback"
+                else:
+                    status = "blocked_hold"
                 if fallback_held:
                     status = self.append_hold_status(status, self.previous_avoidance_side)
                 active = True
@@ -231,16 +242,64 @@ class LocalGridPlanner:
     def fallback_step(self, blocked, goal_unit, step_distance):
         candidates = []
         goal_heading = math.atan2(goal_unit[1], goal_unit[0])
-        for degree in range(-90, 91, 15):
+        max_angle = int(round(self.fallback_max_angle_deg))
+        angle_step = max(1, int(round(self.fallback_angle_step_deg)))
+        probe_distance = max(step_distance * 2.0, 0.5)
+
+        for degree in range(-max_angle, max_angle + 1, angle_step):
             heading = goal_heading + math.radians(degree)
-            target_x = math.cos(heading) * max(step_distance * 2.0, 0.5)
-            target_y = math.sin(heading) * max(step_distance * 2.0, 0.5)
+            target_x = math.cos(heading) * probe_distance
+            target_y = math.sin(heading) * probe_distance
             target_cell = self.xy_to_cell(target_x, target_y)
             if not self.is_line_free(blocked, (0, 0), target_cell):
                 continue
+
             progress = target_x * goal_unit[0] + target_y * goal_unit[1]
             clearance = self.clearance_at(target_cell, blocked, {})
-            score = progress + clearance - abs(degree) / 90.0
+            angle_ratio = abs(degree) / float(max(max_angle, 1))
+            reverse_cost = 0.6 if abs(degree) > 90 else 0.0
+            score = 1.2 * progress + 1.5 * clearance - 0.8 * angle_ratio - reverse_cost
+            side = self.side_for_point(target_x, target_y, goal_unit)
+            score = self.apply_memory_bias(score, side, heading)
+            candidates.append(
+                {
+                    "point": (target_x, target_y),
+                    "score": score,
+                    "side": side,
+                }
+            )
+
+        selected = self.choose_with_hysteresis(candidates)
+        if selected is None:
+            return self.emergency_escape_step(blocked, goal_unit, step_distance)
+
+        target_x, target_y = selected["point"]
+        limited_x, limited_y = self.limit_vector(target_x, target_y, step_distance)
+        return limited_x, limited_y, selected.get("held_side", False)
+
+    def emergency_escape_step(self, blocked, goal_unit, step_distance):
+        candidates = []
+        goal_heading = math.atan2(goal_unit[1], goal_unit[0])
+        angle_step = max(1, int(round(self.fallback_angle_step_deg)))
+        probe_distance = max(
+            self.resolution,
+            min(step_distance, self.emergency_escape_distance),
+        )
+
+        for degree in range(-180, 181, angle_step):
+            heading = goal_heading + math.radians(degree)
+            target_x = math.cos(heading) * probe_distance
+            target_y = math.sin(heading) * probe_distance
+            target_cell = self.xy_to_cell(target_x, target_y)
+            if target_cell in blocked:
+                continue
+            if not self.is_line_free(blocked, (0, 0), target_cell):
+                continue
+
+            progress = target_x * goal_unit[0] + target_y * goal_unit[1]
+            clearance = self.clearance_at(target_cell, blocked, {})
+            angle_ratio = abs(degree) / 180.0
+            score = 2.0 * clearance + 0.2 * progress - 0.2 * angle_ratio
             side = self.side_for_point(target_x, target_y, goal_unit)
             score = self.apply_memory_bias(score, side, heading)
             candidates.append(
