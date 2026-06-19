@@ -217,7 +217,7 @@ class MissionController:
         self.landing_min_altitude = rospy.get_param("~landing_min_altitude", 0.35)
         self.mode_retry_interval = rospy.Duration(rospy.get_param("~mode_retry_interval", 5.0))
         self.initial_setpoint_count = rospy.get_param("~initial_setpoint_count", 100)
-        self.local_setpoint_distance = max(rospy.get_param("~local_setpoint_distance", 0.35), 0.15)
+        self.local_setpoint_distance = max(rospy.get_param("~local_setpoint_distance", 0.30), 0.15)
         self.nearest_search_window = rospy.get_param("~nearest_search_window", 2)
 
         self.current_state = State()
@@ -239,15 +239,25 @@ class MissionController:
             waypoint_pass_progress=rospy.get_param("~waypoint_pass_progress", 0.9),
         )
         self.avoidance = LocalGridPlanner(
-            resolution=rospy.get_param("~grid_resolution", 0.25),
-            forward_range=rospy.get_param("~grid_forward_range", 4.0),
-            side_range=rospy.get_param("~grid_side_range", 3.5),
-            backward_range=rospy.get_param("~grid_backward_range", 0.6),
-            obstacle_inflation=rospy.get_param("~grid_obstacle_inflation", 0.55),
-            clearance_radius=rospy.get_param("~grid_clearance_radius", 1.1),
-            local_goal_distance=rospy.get_param("~local_goal_distance", 3.0),
-            path_lookahead=rospy.get_param("~local_path_lookahead", 0.9),
-            min_target_distance=rospy.get_param("~local_min_target_distance", 0.8),
+            resolution=rospy.get_param("~grid_resolution", 0.30),
+            forward_range=rospy.get_param("~grid_forward_range", 7.0),
+            side_range=rospy.get_param("~grid_side_range", 6.0),
+            backward_range=rospy.get_param("~grid_backward_range", 2.0),
+            obstacle_inflation=rospy.get_param("~grid_obstacle_inflation", 0.40),
+            clearance_radius=rospy.get_param("~grid_clearance_radius", 0.75),
+            local_goal_distance=rospy.get_param("~local_goal_distance", 5.0),
+            path_lookahead=rospy.get_param("~local_path_lookahead", 0.8),
+            min_target_distance=rospy.get_param("~local_min_target_distance", 0.5),
+            backward_penalty=rospy.get_param("~grid_backward_penalty", 1.5),
+            fallback_max_angle_deg=rospy.get_param("~fallback_max_angle_deg", 180.0),
+            fallback_angle_step_deg=rospy.get_param(
+                "~fallback_angle_step_deg",
+                15.0,
+            ),
+            emergency_escape_distance=rospy.get_param(
+                "~emergency_escape_distance",
+                0.25,
+            ),
         )
 
         rospy.Subscriber("/mavros/state", State, self.state_callback)
