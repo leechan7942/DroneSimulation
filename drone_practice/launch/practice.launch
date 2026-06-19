@@ -26,5 +26,20 @@
   </include>
 
   <node pkg="drone_practice" type="land.py" name="landing_detector" output="screen" launch-prefix="bash -c 'sleep 10; exec $0 $@'"/>
-  <node pkg="drone_practice" type="main.py" name="mission_controller" output="screen" launch-prefix="bash -c 'sleep 10; exec $0 $@'"/>
+  <node pkg="drone_practice" type="main.py" name="mission_controller" output="screen" launch-prefix="bash -c 'sleep 10; exec $0 $@'">
+    <param name="local_setpoint_distance" value="0.30"/>
+    <param name="grid_resolution" value="0.30"/>
+    <param name="grid_forward_range" value="7.0"/>
+    <param name="grid_side_range" value="6.0"/>
+    <param name="grid_backward_range" value="2.0"/>
+    <param name="grid_obstacle_inflation" value="0.40"/>
+    <param name="grid_clearance_radius" value="0.75"/>
+    <param name="local_goal_distance" value="5.0"/>
+    <param name="local_path_lookahead" value="0.80"/>
+    <param name="local_min_target_distance" value="0.50"/>
+    <param name="grid_backward_penalty" value="1.50"/>
+    <param name="fallback_max_angle_deg" value="180.0"/>
+    <param name="fallback_angle_step_deg" value="15.0"/>
+    <param name="emergency_escape_distance" value="0.25"/>
+  </node>
 </launch>
